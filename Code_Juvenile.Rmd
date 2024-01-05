@@ -1,0 +1,557 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+This code is for analysis of microglia morphology in 4 experimental groups (tdt no MD, Tdt MD, Cyr61 no MD, Cyr61 MD). It uses Python for PCA and K-means clustering and then R for GLM model comparison. 
+```{python}
+import pandas as pd
+import numpy as np
+import random
+import matplotlib.pyplot as plt
+```
+```{python}
+#import csv file from working directory 
+data_nuc = pd.read_csv('./data/MyExpt_AllIba1_nuc.csv')
+data_nuc=data_nuc[data_nuc.Children_Microglia_Count>0] #filter so you only have the ones with actual processes traced 
+data_nuc=data_nuc.add_prefix('soma_')
+
+data_microglia = pd.read_csv('./data/MyExpt_AllMicroglia.csv')
+
+data= pd.concat([data_nuc.reset_index(drop=True),data_microglia.reset_index(drop=True)], axis=1)
+
+#show top 5 rows to double-check everything looks normal 
+data.head()
+```
+```{python}
+#create mask for removing zeros (we don't want microglia with zeros branches)
+data=data[data.soma_ObjectSkeleton_NumberBranchEnds_MorphologicalSkeleton>0]
+data.head()
+```
+```{python}
+#convert  from pixels to microns 
+data.soma_AreaShape_MajorAxisLength
+data['soma_AreaShape_Area']*= .0441
+data['AreaShape_Area']*= .0441
+data['AreaShape_BoundingBoxArea']*= .0441
+data['AreaShape_ConvexArea']*=.0441
+data['soma_ObjectSkeleton_TotalObjectSkeletonLength_MorphologicalSkeleton']*= .21
+data['soma_averagebranchlength']= data['soma_ObjectSkeleton_TotalObjectSkeletonLength_MorphologicalSkeleton']/ (data['soma_ObjectSkeleton_NumberNonTrunkBranches_MorphologicalSkeleton']+ data['soma_ObjectSkeleton_NumberTrunks_MorphologicalSkeleton'])
+
+data['soma_AreaShape_MajorAxisLength']*=0.21
+data['soma_AreaShape_MinorAxisLength']*=0.21
+
+data['AreaShape_MajorAxisLength']*=0.21
+
+data['AreaShape_MinorAxisLength']*=0.21
+data['AreaShape_MaximumRadius']*=0.21
+data['AreaShape_MeanRadius']*=0.21
+data['AreaShape_Perimeter']*=0.21
+data.soma_AreaShape_MajorAxisLength
+
+```
+
+
+```{python}
+#basic descriptive statistics for data exploration 
+grouped_mean=data.groupby(['soma_Metadata_Mouse','soma_Group'],as_index=False).mean()
+grouped_std=data.groupby(['soma_Metadata_Mouse','soma_Group'],as_index=False).std()
+grouped_median=data.groupby(['soma_Metadata_Mouse','soma_Group'],as_index=False).median()
+
+grouped2_mean=grouped_mean.groupby(['soma_Group'],as_index=False).mean()
+grouped2_std=grouped_std.groupby(['soma_Group'],as_index=False).std()
+grouped2_median=grouped_median.groupby(['soma_Group'],as_index=False).median()
+
+```
+```{python}
+# use seaborn to make a violin chart 
+import seaborn as sns 
+plt.figure(figsize=(12,10))
+sns.set_theme(style="whitegrid")
+sns.set_context("talk")
+
+#custom color palette 
+my_palette=[(0.3,0.3,0.3), 'red', (0.7,0.7,0.7), (1.0,0.5,0.5)]
+sns.violinplot(x="soma_Group",
+            y="soma_AreaShape_Eccentricity",
+            data=data,
+            palette=my_palette,
+            orient='v', 
+            order=['TdT', 'Cyr61','TdT_MD','Cyr61_MD'],
+            inner="box",
+            inner_kws=dict(box_width=15, whis_width=2, color=".3")).set(xlabel="", ylabel="Eccentricity")
+
+plt.title("Soma Eccentricity")
+plt.ylim(0,1)
+plt.show()      
+```
+```{python}
+#cleaned dataset a bit
+#cleaned_data=data.drop(['Slice'],axis=1)
+#cleaned_data=data.drop(['Object_Number'],axis=1)
+#cleaned_data.head()
+```
+```{python}
+# now we import modules for classifying and PCA
+from sklearn.preprocessing import StandardScaler
+from sklearn.cluster import KMeans
+from sklearn.decomposition import PCA
+from sklearn.metrics import accuracy_score
+from sklearn.model_selection import train_test_split
+
+from sklearn.preprocessing import LabelEncoder
+
+#encode viral group 
+label_encoder=LabelEncoder()
+data['encoded_group']=label_encoder.fit_transform(data['soma_Group'].astype(str))
+
+#define features (aka variables) of interest for our model 
+#define features (aka variables) of interest for our model 
+features=['soma_AreaShape_Area',
+          'soma_AreaShape_Eccentricity', 
+          'soma_AreaShape_MinorAxisLength',
+          'soma_AreaShape_MajorAxisLength',
+          'soma_ObjectSkeleton_TotalObjectSkeletonLength_MorphologicalSkeleton',
+          'soma_ObjectSkeleton_NumberBranchEnds_MorphologicalSkeleton',
+          'soma_ObjectSkeleton_NumberNonTrunkBranches_MorphologicalSkeleton',
+          'soma_ObjectSkeleton_NumberTrunks_MorphologicalSkeleton',
+          'soma_averagebranchlength',
+          'AreaShape_Area',
+          'AreaShape_BoundingBoxArea',
+          'AreaShape_ConvexArea',
+          'AreaShape_FormFactor',
+          'AreaShape_Compactness',
+          'AreaShape_Eccentricity',
+          'AreaShape_MajorAxisLength',
+          'AreaShape_MinorAxisLength',
+          'AreaShape_MaximumRadius',
+          'AreaShape_MeanRadius',
+          'AreaShape_Perimeter',
+          'AreaShape_Solidity']
+         
+print(label_encoder)
+
+```
+```{python}
+#split data into experimental groups 
+
+data=data.reset_index(drop=True) #reindex dataframe
+#standard scaler
+scaler=StandardScaler()
+segmentation_std=scaler.fit_transform(data[features])
+print(segmentation_std)
+```
+```{python}
+#Dimensionality Reduction with PCA 
+pca=PCA()
+pca.fit(segmentation_std)
+pca.explained_variance_ratio_ #how much of the variance is explained by each of the seven individual components 
+colNames=list(features)
+print(colNames)
+
+```
+```{python}
+AllPCs=pd.DataFrame(pca.components_,columns=colNames, 
+                   index=['PC-1','PC-2','PC-3','PC-4','PC-5','PC-6','PC-7','PC-8','PC-9'])
+
+```
+```{python}
+# PLOTTING TO DETERMINE NUMBER OF COMPONENTS TO USE 
+plt.figure(figsize=(10,8))
+plt.plot(range(1,22), pca.explained_variance_ratio_.cumsum(), marker = 'o', linestyle='--')
+plt.title('Explained Variance by Components')
+plt.xlabel('Number of Components')
+plt.ylabel('Cumulative Explained Variance')
+plt.show()
+```
+Ok so from this we want 3 components because that explains 80% of the varaiblility
+
+```{python}
+#now we perform PCA with the chosen number of components (3)
+pca=PCA(n_components=3)
+
+#fit the model to our data with the selected number of components (3)
+pca.fit(segmentation_std)
+scores_pca=pca.transform(segmentation_std)
+scores_pca
+```
+
+```{python}
+#Feature importance for each PC
+pca.explained_variance_ratio_
+print(abs(pca.components_))
+
+df_pca=pd.DataFrame(abs(pca.components_.T), columns= ['PC1','PC2','PC3','PC4'],
+    index= features)
+
+
+#make clustermap heatmap 
+plt.figure(figsize=(10,15))
+sns.heatmap(df_pca, annot=True)
+plt.rcParams['pdf.use14corefonts'] = True
+
+plt.savefig('PCA_features',format='pdf', bbox_inches="tight")
+plt.show()
+```
+
+```{python}
+#how many k clusters will we use? 
+
+wcss=[]; #within cluster sum of squares 
+for i in range(1,21):
+    kmeans_pca=KMeans(n_clusters=i, init='k-means++', random_state=42)
+    kmeans_pca.fit(scores_pca)
+    wcss.append(kmeans_pca.inertia_)
+```
+```{python}
+#plot to use the elbow method for cluster number selection 
+plt.figure(figsize=(10,8))
+plt.plot(range(1,21), wcss, marker='o', linestyle= '--')
+plt.xlabel('Number of Clusters')
+plt.ylabel('WCSS')
+plt.title('K-means with PCA clustering')
+plt.show()
+```
+Gonna choose 4 clusters, which makes sense given the literature 
+```{python}
+#KMEANS CLUSTERING WITH CHOSEN NUMBER OF CLUSTERS AND USING PCA COMPONENTS
+kmeans_pca=KMeans(n_clusters=4, init='k-means++', random_state=42)
+
+#we fit data with the k-means pca model
+kmeans_pca.fit(scores_pca)
+```
+```{python}
+#create new data frame with the original features and add the PCA scores and assigned clusters. 
+df_cleaned=data[features]
+df_segm_pca_kmeans=pd.concat([df_cleaned.reset_index(drop=True), pd.DataFrame(scores_pca)], axis=1)
+df_segm_pca_kmeans.columns.values[-3:]=['Component 1','Component 2', 'Component 3']
+#add viral group
+df_segm_pca_kmeans['Group']=data['soma_Group']
+#add last column with pca k-means clustering labels 
+df_segm_pca_kmeans['Segment K-means PCA']=kmeans_pca.labels_
+df_segm_pca_kmeans.head()
+
+```
+```{python}
+
+#"segment"=cluster
+df_segm_pca_kmeans['Segment']=df_segm_pca_kmeans['Segment K-means PCA'].map({0:'first',
+                                                                            1:'second',
+                                                                            2:'third',
+                                                                            3:'fourth'
+                                                                            })
+df_segm_pca_kmeans.head()
+```
+```{python}
+# plot the data by the PCA components 
+
+x_axis=df_segm_pca_kmeans['Component 2']
+y_axis=df_segm_pca_kmeans['Component 1']
+
+plt.figure(figsize=(10,8))
+sns.scatterplot(data=df_segm_pca_kmeans, x=x_axis, y=y_axis,
+                hue_order=['first','second','third','fourth'], hue = df_segm_pca_kmeans['Segment'])
+plt.title('Clusters by PCA components')
+plt.show()
+```
+```{python}
+#mean components values of each cluster
+#mean components values of each cluster
+cluster1_means=df_segm_pca_kmeans.loc[df_segm_pca_kmeans['Segment']== 'first'].mean()
+cluster2_means=df_segm_pca_kmeans.loc[df_segm_pca_kmeans['Segment']== 'second'].mean()
+cluster3_means=df_segm_pca_kmeans.loc[df_segm_pca_kmeans['Segment']== 'third'].mean()
+cluster4_means=df_segm_pca_kmeans.loc[df_segm_pca_kmeans['Segment']== 'fourth'].mean()
+
+#make dataframes with all averages based on cluster 
+DF1=pd.concat([cluster1_means,cluster2_means],axis=1)
+DF2=pd.concat([DF1,cluster3_means],axis=1)
+DF3=pd.concat([DF2,cluster4_means],axis=1)
+cluster_averages=DF3
+cluster_averages.columns=['Cluster 1','Cluster 2','Cluster 3', 'Cluster 4']
+
+
+```
+```{python}
+#some data frame clean up 
+#delete encoded_virus, Component1, PC2 PC3, and Segment K-mean PCA 
+#you don't need these for clustermap 
+cleaned_cluster_averages=cluster_averages.drop(index=['Component 1', 'Component 2','Component 3', 'Segment K-means PCA'])
+print(cleaned_cluster_averages)
+
+df_segm_pca_kmeans['Mouse']=data['soma_Metadata_Mouse']
+print(df_segm_pca_kmeans)
+```
+```{python}
+#plotting the cluster map for each group 
+#I am not using the scaled features, but using the raw values because some of the morphotypes have already been quantified in the literature, so I want to see the actual numbers 
+
+from matplotlib.colors import LogNorm
+sns.set(font_scale=1.0)
+
+#tdt no MD
+plt.figure(figsize=(10,8), layout='constrained')
+sns.clustermap(cleaned_cluster_averages, norm=LogNorm())
+plt.title('Tdt no MD')
+plt.show()
+plt.savefig('cleaned_clustermap',format='pdf', bbox_inches="tight")
+
+```
+```{python}
+#use the scaled measurements 
+colNames=list(features)
+
+df_scaled=pd.DataFrame(segmentation_std,columns=colNames)
+
+#add the assigned clusters
+#tdt no MD
+#add last column with pca k-means clustering labels 
+df_scaled['Cluster']=df_segm_pca_kmeans['Segment']
+
+
+#averages of features per cluster 
+cluster_scaled_means=df_scaled.groupby(['Cluster']).mean()
+cluster_scaled_means
+#make 
+```
+
+
+```{python}
+#plot the clusters using scaled measurements 
+#tdt no MD
+plt.figure(figsize=(10,15), layout='constrained')
+plt.rcParams['pdf.use14corefonts'] = True
+sns.clustermap(cluster_scaled_means.T)#transpose so that cluster is on x axis 
+
+plt.savefig('scaled_clustermap',format='pdf', bbox_inches="tight")
+plt.show()
+
+```
+```{python}
+
+sns.set_theme("talk")
+sns.set_theme(style="ticks")
+plt.figure().clf()
+
+for j in range(21): 
+ # temp=pd.DataFrame(data.groupby(['soma_Group','soma_Metadata_Mouse'])[features[j]].median())
+  sns.violinplot(data=data,x='soma_Group',y=features[j],
+            order=['TdT', 'Cyr61','TdT_MD','Cyr61_MD'],
+            palette=my_palette,inner="quart")
+  plt.title(features[j])          
+  sns.despine() 
+  plt.show()
+  plt.savefig(str(features[j])+ '_violinplot',format='pdf', bbox_inches="tight")
+  plt.figure().clf()
+```
+```{python}
+temp=pd.DataFrame(data.groupby(['soma_Group','soma_Metadata_Mouse'])[features[2]].median())
+temp
+```
+
+
+```{python}
+import scipy.stats as stats
+import scikit_posthocs as sp 
+
+pval_kruskal=[] 
+pval_featurename=[]
+pval_dunn=[]
+
+for j in range (21):   
+  #kruskal wallis test 
+  result, f=stats.kruskal(data[features[j]].loc[data['soma_Group']=='TdT'], data[features[j]].loc[data['soma_Group']=='TdT_MD'],
+      data[features[j]].loc[data['soma_Group']=='Cyr61'],
+      data[features[j]].loc[data['soma_Group']=='Cyr61_MD'])
+  pval_featurename.append(features[j])
+  pval_kruskal.append(f)    
+  #dunn's posthoc tests 
+  temp=[data[features[j]].loc[data['soma_Group']=='TdT'], data[features[j]].loc[data['soma_Group']=='TdT_MD'],
+      data[features[j]].loc[data['soma_Group']=='Cyr61'],
+      data[features[j]].loc[data['soma_Group']=='Cyr61_MD']]
+  
+  p= sp.posthoc_dunn(temp, p_adjust='holm')
+  p.index.names=[features[j]]
+  p.rename(index={1:'TdT',2:'TdT_MD',3:'Cyr61',4:'Cyr61_MD'},inplace=True)
+  pval_dunn.append(p)
+  print(p)
+#make dataframe with Kruskal wallis results   
+pvals_kruskal_cp=pd.DataFrame(pval_kruskal, index=pval_featurename)
+
+df_pval_dunn=pd.concat(pval_dunn, 
+  keys=map(lambda d: d.index.name, pval_dunn), axis=0)
+df_pval_dunn.columns=['TdT','TdT_MD','Cyr61','Cyr61_MD']
+
+pvals_kruskal_cp.to_csv('./PVals_Kruskal_cp.csv')
+df_pval_dunn.to_csv('./Dunns_Kruskal_cp.csv')
+
+```
+```{python}
+microglia_count=data.groupby(['soma_Group'])['soma_Group'].count()
+print(microglia_count)
+```
+```{python}
+def clusterpercentage (data, segment):
+    #data = data frame 
+    #segment= "Segment" column with cluster IDs 
+    #get cluster percent per mouse 
+    percent=(data.groupby(['Group','Mouse',segment,])[segment].count())/(data.groupby(['Mouse'])['Mouse'].count())
+    return percent 
+
+```
+```{python}
+percent=clusterpercentage(df_segm_pca_kmeans,'Segment')
+percent
+```
+```{python}
+
+df_percent=pd.DataFrame(percent, columns=['percent'])
+df_percent=df_percent.reset_index(level=['Group','Mouse','Segment'])
+df_percent['Segment']=df_percent['Segment'].replace({"first":"amoeboid","second":"hyper-ramified","third": "rod-like","fourth":"ramified"})
+print(df_percent)
+df_percent.to_csv('./juv_all_data.csv')
+
+```
+
+```{r}
+library(tidyverse)
+library(glmmTMB)
+```
+```{r}
+all_data=read.csv("juv_all_data.csv")
+print(all_data)
+
+```
+```{r}
+#linear mixed effects model 
+library(glmmTMB)
+all_data$Mouse <-factor(all_data$Mouse)
+all_data$Segment<-factor(all_data$Segment)
+all_data$Group<-factor(all_data$Group)
+
+
+model="percent ~ Segment*Group +(1|Mouse)"
+posthoc1= "~Segment|Group"
+posthoc2="~Group|Segment"
+
+y.model=as.character(model)
+z.model=as.character(posthoc1)
+x.model=as.character(posthoc2)
+
+options(contrasts=c("contr.sum","contr.poly"))
+model <-glmmTMB(as.formula(paste(y.model)), data=all_data, family=beta_family(link='logit'))
+
+
+```
+```{r}
+#look at the model 
+library(DHARMa)
+res=simulateResiduals(model)
+plot(res,rank=T)
+modelcheck<-recordPlot()
+plot.new()
+modelcheck
+print(model)
+```
+```{r}
+#anova 
+
+anova=car::Anova(model)
+anova
+```
+```{r}
+# posthoc test looking at group 
+library(emmeans)
+sink(file="pairwise_tests_juvenile.txt")
+ph<-emmeans(model, as.formula(paste(z.model)))
+ph2<-contrast(ph,method="pairwise", adjust="none")
+ph3<-test(ph2,by=NULL,adjust="sidak")
+posthoc1<-as.data.frame(ph3)
+posthoc1
+
+ph1<-emmeans(model, as.formula(paste(x.model)))
+ph4<-contrast(ph1,method="pairwise", adjust="none")
+ph5<-test(ph4,by=NULL,adjust="sidak")
+posthoc2<-as.data.frame(ph5)
+posthoc2
+sink(file=NULL)
+```
+
+```{python}
+import seaborn as sns
+import matplotlib.pyplot as plt
+import pandas as pd 
+import numpy as np
+
+all_data = pd.read_csv('./juv_all_data.csv')
+
+plt.figure(figsize=(12,10))
+
+sns.set_theme("talk")
+sns.set_theme(style="ticks")
+hue_order=['TdT','Cyr61','TdT_MD','Cyr61_MD']
+ax1=sns.boxplot(x='Segment',y='percent',hue='Group',data=all_data,palette=my_palette,
+            hue_order=hue_order, whis=[0,100],
+            order=['amoeboid', 'rod-like','ramified','hyper-ramified'])
+sns.stripplot(data=all_data, x="Segment",y="percent",hue='Group', hue_order=hue_order, dodge=True,
+            order=['amoeboid', 'rod-like','ramified','hyper-ramified'],size=6, color=".3")            
+            
+sns.move_legend(ax1,"upper right")
+sns.despine()
+plt.rcParams['pdf.use14corefonts'] = True
+
+plt.savefig('boxplot_clusterpercent',format='pdf', bbox_inches="tight")
+plt.show()
+```
+```{python}
+#plot but separate by viral group and manipulation 
+sns.set()
+sns.set_theme("talk")
+sns.set_theme(style="ticks")
+
+fig,axes=plt.subplots(2,2,figsize=(10,12),sharey=True)
+fig.subplots_adjust(hspace=0.7,wspace=0.125)
+#WT 
+TdT=all_data.loc[all_data['Group']=='TdT']
+TdT_MD=all_data.loc[all_data['Group']=='TdT_MD']
+Cyr61=all_data.loc[all_data['Group']=='Cyr61']
+Cyr61_MD=all_data.loc[all_data['Group']=='Cyr61_MD']
+
+hue_palette=sns.color_palette("rocket", 4)
+sns.boxplot(data=TdT, x="Segment",y="percent",ax=axes[0,0],
+            whis=[0,100],
+            order=['amoeboid', 'rod-like','ramified','hyper-ramified'],hue='Segment',palette=hue_palette)
+sns.boxplot(data=Cyr61, x="Segment",y="percent",ax=axes[0,1],
+            whis=[0,100],
+            order=['amoeboid', 'rod-like','ramified','hyper-ramified'],hue='Segment',palette=hue_palette)
+sns.boxplot(data=TdT_MD, x="Segment",y="percent",ax=axes[1,0],
+            whis=[0,100],
+            order=['amoeboid', 'rod-like','ramified','hyper-ramified'],hue='Segment',palette=hue_palette)
+sns.boxplot(data=Cyr61_MD, x="Segment",y="percent",ax=axes[1,1],
+            whis=[0,100],
+            order=['amoeboid', 'rod-like','ramified','hyper-ramified'],hue='Segment',palette=hue_palette)
+            
+sns.stripplot(data=TdT, x="Segment",y="percent",ax=axes[0,0],
+            order=['amoeboid', 'rod-like','ramified','hyper-ramified'],size=4, color=".3")
+sns.stripplot(data=Cyr61, x="Segment",y="percent",ax=axes[0,1],
+            order=['amoeboid', 'rod-like','ramified','hyper-ramified'],size=4, color=".3")
+sns.stripplot(data=TdT_MD, x="Segment",y="percent",ax=axes[1,0],
+            order=['amoeboid', 'rod-like','ramified','hyper-ramified'],size=4, color=".3")
+sns.stripplot(data=Cyr61_MD, x="Segment",y="percent",ax=axes[1,1],
+            order=['amoeboid', 'rod-like','ramified','hyper-ramified'],size=4, color=".3")
+sns.despine()            
+axes[0,0].set_title('tdT no MD')
+axes[0,1].set_title('CCN1 no MD')
+axes[1,0].set_title('tdT 5D MD')
+axes[1,1].set_title('CCN1 5D MD')
+plt.rcParams['pdf.use14corefonts'] = True
+
+plt.savefig('boxplot_clustersbygroup',format='pdf', bbox_inches="tight")
+
+plt.show()
+```
+
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
